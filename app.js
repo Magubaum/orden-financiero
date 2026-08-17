@@ -4,6 +4,7 @@ const CATS_GASTO_DEFAULT = [
   "Deudas", "Pagos", "Seguro", "Credito Hip", "Supermercado", "Delivery", "Luz", "Gas", "Celular",
   "Lety", "Tarjeta Visa", "Tarjeta Master", "Tarjeta ICBC", "Gimnasio", "Otros Gastos",
 ];
+const MEDIOS_PAGO = ["Efectivo", "Tarjeta", "Dólar"];
 const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
 const state = {
@@ -14,11 +15,14 @@ const state = {
   filtro: "todos",
   quienSos: localStorage.getItem("of-quien-sos") || "",
   listo: false,
+  primerRenderHecho: false,
 };
 
 function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
-function fmtMoney(n) {
+function monedaDeMovimiento(m) { return m.medioPago === "Dólar" ? "USD" : "ARS"; }
+function fmtMoney(n, moneda) {
   const v = Number(n) || 0;
+  if (moneda === "USD") return "US$ " + v.toLocaleString("es-AR", { maximumFractionDigits: 2 });
   return v.toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
 }
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
@@ -58,21 +62,46 @@ function mostrarErrorConexion(err) {
 }
 
 function movimientosDelMes(mk) { return state.movimientos.filter((m) => m.fecha.slice(0, 7) === mk); }
-function totalAportado(o) { return (o.aportes || []).reduce((s, a) => s + Number(a.monto), 0); }
+
+// Suma separada por moneda: nunca se mezcla ARS con USD en un mismo número.
+function totalesPorMoneda(lista) {
+  return lista.reduce((acc, m) => {
+    const moneda = monedaDeMovimiento(m);
+    acc[moneda] = (acc[moneda] || 0) + Number(m.monto || 0);
+    return acc;
+  }, { ARS: 0, USD: 0 });
+}
+
+// Aportes de un objetivo, separados por moneda (cada aporte puede tener la suya).
+function aportadoPorMoneda(o) {
+  return (o.aportes || []).reduce((acc, a) => {
+    const moneda = a.moneda === "USD" ? "USD" : "ARS";
+    acc[moneda] = (acc[moneda] || 0) + Number(a.monto || 0);
+    return acc;
+  }, { ARS: 0, USD: 0 });
+}
 
 function render() {
   if (!state.listo) return;
+
+  // Primera vez que la app carga en este dispositivo: pedimos el nombre.
+  if (!state.primerRenderHecho) {
+    state.primerRenderHecho = true;
+    if (!state.quienSos) { setTimeout(abrirQuienSos, 0); }
+  }
+
   const mk = monthKey(state.mes);
   const delMes = movimientosDelMes(mk);
-  const totalIngresos = delMes.filter((m) => m.tipo === "ingreso").reduce((s, m) => s + Number(m.monto), 0);
-  const totalGastos = delMes.filter((m) => m.tipo === "gasto").reduce((s, m) => s + Number(m.monto), 0);
-  const ahorroMes = totalIngresos - totalGastos;
+  const ingresosMes = totalesPorMoneda(delMes.filter((m) => m.tipo === "ingreso"));
+  const gastosMes = totalesPorMoneda(delMes.filter((m) => m.tipo === "gasto"));
+  const ahorroARS = ingresosMes.ARS - gastosMes.ARS;
+  const ahorroUSD = ingresosMes.USD - gastosMes.USD;
 
   const mesAnterior = new Date(state.mes); mesAnterior.setMonth(mesAnterior.getMonth() - 1);
   const mkAnterior = monthKey(mesAnterior);
   const delMesAnterior = movimientosDelMes(mkAnterior);
-  const gastosMesAnterior = delMesAnterior.filter((m) => m.tipo === "gasto").reduce((s, m) => s + Number(m.monto), 0);
-  const diffPct = delMesAnterior.length > 0 && gastosMesAnterior > 0 ? ((totalGastos - gastosMesAnterior) / gastosMesAnterior) * 100 : null;
+  const gastosMesAnteriorARS = totalesPorMoneda(delMesAnterior.filter((m) => m.tipo === "gasto")).ARS;
+  const diffPct = delMesAnterior.length > 0 && gastosMesAnteriorARS > 0 ? ((gastosMes.ARS - gastosMesAnteriorARS) / gastosMesAnteriorARS) * 100 : null;
 
   let filtrados = delMes.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
   if (state.filtro === "ingresos") filtrados = filtrados.filter((m) => m.tipo === "ingreso");
@@ -99,16 +128,19 @@ function render() {
       <section class="cards">
         <div class="card">
           <div class="label">Ingresos del mes</div>
-          <div class="valor mono" style="color:#3F93B5">${fmtMoney(totalIngresos)}</div>
+          <div class="valor mono" style="color:#3F93B5">${fmtMoney(ingresosMes.ARS, "ARS")}</div>
+          ${ingresosMes.USD ? `<div class="sub mono">${fmtMoney(ingresosMes.USD, "USD")}</div>` : ""}
         </div>
         <div class="card">
           <div class="label">Gastos del mes</div>
-          <div class="valor mono" style="color:#2E7A9C">${fmtMoney(totalGastos)}</div>
+          <div class="valor mono" style="color:#2E7A9C">${fmtMoney(gastosMes.ARS, "ARS")}</div>
+          ${gastosMes.USD ? `<div class="sub mono">${fmtMoney(gastosMes.USD, "USD")}</div>` : ""}
           ${diffPct === null ? "" : `<div class="badge ${diffPct >= 0 ? "sube" : "baja"} mono">${diffPct >= 0 ? "+" : ""}${diffPct.toFixed(0)}% vs ${MESES[mesAnterior.getMonth()]}</div>`}
         </div>
         <div class="card">
           <div class="label">Ahorro del mes</div>
-          <div class="valor mono" style="color:${ahorroMes >= 0 ? "#2E7C6C" : "#B75A34"}">${fmtMoney(ahorroMes)}</div>
+          <div class="valor mono" style="color:${ahorroARS >= 0 ? "#2E7C6C" : "#B75A34"}">${fmtMoney(ahorroARS, "ARS")}</div>
+          ${ingresosMes.USD || gastosMes.USD ? `<div class="sub mono" style="color:${ahorroUSD >= 0 ? "#2E7C6C" : "#B75A34"}">${fmtMoney(ahorroUSD, "USD")}</div>` : ""}
         </div>
       </section>
 
@@ -119,16 +151,21 @@ function render() {
         </div>
         ${state.objetivos.length === 0 ? `<div class="empty">Todavía no cargaron ningún objetivo. Podés armar uno para el fondo de emergencia, unas vacaciones, lo que sea.</div>` : ""}
         ${state.objetivos.map((o) => {
-          const aportado = totalAportado(o);
-          const restante = Math.max(0, o.montoObjetivo - aportado);
-          const pct = o.montoObjetivo > 0 ? Math.min(100, (aportado / o.montoObjetivo) * 100) : 0;
+          const moneda = o.moneda === "USD" ? "USD" : "ARS";
+          const aportado = aportadoPorMoneda(o);
+          const aportadoEnSuMoneda = aportado[moneda];
+          const otraMoneda = moneda === "USD" ? "ARS" : "USD";
+          const aportadoOtraMoneda = aportado[otraMoneda];
+          const restante = Math.max(0, o.montoObjetivo - aportadoEnSuMoneda);
+          const pct = o.montoObjetivo > 0 ? Math.min(100, (aportadoEnSuMoneda / o.montoObjetivo) * 100) : 0;
           return `
             <div class="goal">
               <div class="goal-top">
                 <span class="goal-nombre">${esc(o.nombre)}</span>
                 <button class="linklike btn-aporte" data-id="${o.id}">+ aporte</button>
               </div>
-              <div class="goal-meta mono">${fmtMoney(aportado)} / ${fmtMoney(o.montoObjetivo)} · falta ${fmtMoney(restante)}</div>
+              <div class="goal-meta mono">${fmtMoney(aportadoEnSuMoneda, moneda)} / ${fmtMoney(o.montoObjetivo, moneda)} · falta ${fmtMoney(restante, moneda)}</div>
+              ${aportadoOtraMoneda ? `<div class="goal-meta mono" style="margin-top:-4px">además, ${fmtMoney(aportadoOtraMoneda, otraMoneda)} aportados aparte (no cuentan para esta meta, está en ${moneda})</div>` : ""}
               <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
             </div>`;
         }).join("")}
@@ -149,9 +186,9 @@ function render() {
             <div class="row">
               <div style="flex:1">
                 <div class="titulo">${esc(m.categoria)}${m.descripcion ? ` · ${esc(m.descripcion)}` : ""}</div>
-                <div class="meta">${esc(m.persona || "?")} · ${m.fecha.slice(8,10)}/${m.fecha.slice(5,7)}</div>
+                <div class="meta">${esc(m.persona || "?")} · ${esc(m.medioPago || "Efectivo")} · ${m.fecha.slice(8,10)}/${m.fecha.slice(5,7)}</div>
               </div>
-              <div class="monto mono" style="color:${m.tipo === "ingreso" ? "#2E7C6C" : "#2E7A9C"}">${m.tipo === "ingreso" ? "+" : "−"}${fmtMoney(m.monto)}</div>
+              <div class="monto mono" style="color:${m.tipo === "ingreso" ? "#2E7C6C" : "#2E7A9C"}">${m.tipo === "ingreso" ? "+" : "−"}${fmtMoney(m.monto, monedaDeMovimiento(m))}</div>
               <button class="delbtn btn-del-mov" data-id="${m.id}" aria-label="Eliminar">✕</button>
             </div>
           `).join("")}
@@ -217,7 +254,11 @@ function abrirNuevoMovimiento() {
       <select id="mv-categoria"></select>
     </div>
     <div class="field">
-      <div class="field-label">Monto</div>
+      <div class="field-label">Método de pago</div>
+      <select id="mv-mediopago">${MEDIOS_PAGO.map((mp) => `<option>${mp}</option>`).join("")}</select>
+    </div>
+    <div class="field">
+      <div class="field-label">Monto ${"" /* aclaración dinámica según método de pago */}<span id="mv-moneda-hint" class="mono" style="text-transform:none;letter-spacing:0"></span></div>
       <input id="mv-monto" type="number" placeholder="0" />
     </div>
     <div class="field">
@@ -237,7 +278,13 @@ function abrirNuevoMovimiento() {
     const cats = state.categorias[tipo] || [];
     sel.innerHTML = cats.map((c) => `<option>${esc(c)}</option>`).join("");
   }
+  function pintarHintMoneda() {
+    const mp = ov.querySelector("#mv-mediopago").value;
+    ov.querySelector("#mv-moneda-hint").textContent = mp === "Dólar" ? " (en dólares)" : " (en pesos)";
+  }
   pintarCats();
+  pintarHintMoneda();
+  ov.querySelector("#mv-mediopago").onchange = pintarHintMoneda;
 
   ov.querySelector("#tt-gasto").onclick = () => {
     tipo = "gasto";
@@ -254,11 +301,12 @@ function abrirNuevoMovimiento() {
   ov.querySelector("#mv-cancelar").onclick = () => ov.remove();
   ov.querySelector("#mv-guardar").onclick = async () => {
     const categoria = ov.querySelector("#mv-categoria").value;
+    const medioPago = ov.querySelector("#mv-mediopago").value;
     const monto = Number(ov.querySelector("#mv-monto").value);
     const descripcion = ov.querySelector("#mv-desc").value.trim();
     const fecha = ov.querySelector("#mv-fecha").value;
     if (!categoria || !(monto > 0) || !fecha) return;
-    await db.collection("movimientos").add({ tipo, categoria, monto, descripcion, fecha, persona: state.quienSos });
+    await db.collection("movimientos").add({ tipo, categoria, medioPago, monto, descripcion, fecha, persona: state.quienSos });
     ov.remove();
   };
 }
@@ -327,7 +375,13 @@ function abrirObjetivos() {
     <div class="field" style="margin-top:14px">
       <div class="field-label">Nuevo objetivo</div>
       <input id="obj-nombre" placeholder="Nombre, ej: Fondo de emergencia" />
-      <input id="obj-monto" type="number" placeholder="Monto objetivo" style="margin-top:8px" />
+      <div style="display:flex; gap:8px; margin-top:8px">
+        <input id="obj-monto" type="number" placeholder="Monto objetivo" style="flex:1" />
+        <select id="obj-moneda" style="width:110px; margin-top:4px">
+          <option value="ARS">Pesos ARS</option>
+          <option value="USD">Dólares</option>
+        </select>
+      </div>
       <button class="btn-primary" id="obj-agregar">Agregar objetivo</button>
     </div>
     <button class="btn-secondary" id="obj-cerrar">Cerrar</button>
@@ -338,7 +392,7 @@ function abrirObjetivos() {
       <div class="row" style="border-bottom:1px dotted #AFC9D6">
         <div style="flex:1">
           <div class="titulo">${esc(o.nombre)}</div>
-          <div class="meta mono">Meta: ${fmtMoney(o.montoObjetivo)}</div>
+          <div class="meta mono">Meta: ${fmtMoney(o.montoObjetivo, o.moneda === "USD" ? "USD" : "ARS")}</div>
         </div>
         <button class="delbtn obj-del" data-id="${o.id}">✕</button>
       </div>
@@ -352,8 +406,9 @@ function abrirObjetivos() {
   ov.querySelector("#obj-agregar").onclick = async () => {
     const nombre = ov.querySelector("#obj-nombre").value.trim();
     const monto = Number(ov.querySelector("#obj-monto").value);
+    const moneda = ov.querySelector("#obj-moneda").value;
     if (!nombre || !(monto > 0)) return;
-    await db.collection("objetivos").add({ nombre, montoObjetivo: monto, aportes: [] });
+    await db.collection("objetivos").add({ nombre, montoObjetivo: monto, moneda, aportes: [] });
     ov.querySelector("#obj-nombre").value = "";
     ov.querySelector("#obj-monto").value = "";
   };
@@ -367,11 +422,19 @@ function abrirObjetivos() {
 function abrirAporte(objetivoId) {
   const objetivo = state.objetivos.find((o) => o.id === objetivoId);
   if (!objetivo) return;
+  const monedaObjetivo = objetivo.moneda === "USD" ? "USD" : "ARS";
   const ov = abrirOverlay(`
     <h3 style="margin-top:0">Aporte a "${esc(objetivo.nombre)}"</h3>
+    <p style="font-size:12px;color:#6D8A99;margin-top:-8px">Este objetivo tiene su meta en ${monedaObjetivo === "USD" ? "dólares" : "pesos"}. Podés aportar en la otra moneda igual, pero no va a contar para el avance de la barra.</p>
     <div class="field">
       <div class="field-label">Monto</div>
-      <input id="ap-monto" type="number" placeholder="0" />
+      <div style="display:flex; gap:8px">
+        <input id="ap-monto" type="number" placeholder="0" style="flex:1" />
+        <select id="ap-moneda" style="width:110px; margin-top:4px">
+          <option value="ARS" ${monedaObjetivo === "ARS" ? "selected" : ""}>Pesos ARS</option>
+          <option value="USD" ${monedaObjetivo === "USD" ? "selected" : ""}>Dólares</option>
+        </select>
+      </div>
     </div>
     <div class="field">
       <div class="field-label">Fecha</div>
@@ -383,10 +446,11 @@ function abrirAporte(objetivoId) {
   ov.querySelector("#ap-cancelar").onclick = () => ov.remove();
   ov.querySelector("#ap-guardar").onclick = async () => {
     const monto = Number(ov.querySelector("#ap-monto").value);
+    const moneda = ov.querySelector("#ap-moneda").value;
     const fecha = ov.querySelector("#ap-fecha").value;
     if (!(monto > 0) || !fecha) return;
     await db.collection("objetivos").doc(objetivoId).update({
-      aportes: firebase.firestore.FieldValue.arrayUnion({ monto, fecha }),
+      aportes: firebase.firestore.FieldValue.arrayUnion({ monto, moneda, fecha }),
     });
     ov.remove();
   };
@@ -397,6 +461,7 @@ function exportarExcel() {
 
   const movs = state.movimientos.slice().sort((a, b) => (a.fecha < b.fecha ? -1 : 1)).map((m) => ({
     Fecha: m.fecha, Tipo: m.tipo === "ingreso" ? "Ingreso" : "Gasto", Categoría: m.categoria,
+    "Método de pago": m.medioPago || "Efectivo", Moneda: monedaDeMovimiento(m),
     Monto: Number(m.monto) || 0, Descripción: m.descripcion || "", Persona: m.persona || "",
   }));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(movs), "Movimientos");
@@ -404,17 +469,27 @@ function exportarExcel() {
   const meses = Array.from(new Set(state.movimientos.map((m) => m.fecha.slice(0, 7)))).sort();
   const resumen = meses.map((k) => {
     const delMes = state.movimientos.filter((m) => m.fecha.slice(0, 7) === k);
-    const ing = delMes.filter((m) => m.tipo === "ingreso").reduce((s, m) => s + Number(m.monto), 0);
-    const gas = delMes.filter((m) => m.tipo === "gasto").reduce((s, m) => s + Number(m.monto), 0);
+    const ing = totalesPorMoneda(delMes.filter((m) => m.tipo === "ingreso"));
+    const gas = totalesPorMoneda(delMes.filter((m) => m.tipo === "gasto"));
     const [y, mo] = k.split("-");
-    return { Mes: `${MESES[Number(mo) - 1]} ${y}`, Ingresos: ing, Gastos: gas, Ahorro: ing - gas };
+    return {
+      Mes: `${MESES[Number(mo) - 1]} ${y}`,
+      "Ingresos ARS": ing.ARS, "Gastos ARS": gas.ARS, "Ahorro ARS": ing.ARS - gas.ARS,
+      "Ingresos USD": ing.USD, "Gastos USD": gas.USD, "Ahorro USD": ing.USD - gas.USD,
+    };
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), "Resumen mensual");
 
-  const obj = state.objetivos.map((o) => ({
-    Objetivo: o.nombre, "Monto objetivo": Number(o.montoObjetivo) || 0,
-    Aportado: totalAportado(o), Restante: Math.max(0, (Number(o.montoObjetivo) || 0) - totalAportado(o)),
-  }));
+  const obj = state.objetivos.map((o) => {
+    const moneda = o.moneda === "USD" ? "USD" : "ARS";
+    const aportado = aportadoPorMoneda(o);
+    return {
+      Objetivo: o.nombre, Moneda: moneda, "Monto objetivo": Number(o.montoObjetivo) || 0,
+      "Aportado (misma moneda)": aportado[moneda],
+      Restante: Math.max(0, (Number(o.montoObjetivo) || 0) - aportado[moneda]),
+      "Aportado en la otra moneda": aportado[moneda === "USD" ? "ARS" : "USD"],
+    };
+  });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(obj), "Objetivos de ahorro");
 
   XLSX.writeFile(wb, `orden-financiero-${monthKey(state.mes)}.xlsx`);
